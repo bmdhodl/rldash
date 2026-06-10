@@ -367,23 +367,33 @@ def main() -> None:
                              f"{C['gray']}│{C['rst']}")
             lines.append(f"  {C['gray']}└" + "─" * inner + "┘" + C["rst"])
 
-        # run state: live GPU beats markers; markers tell complete vs crash
+        # LOG AGE is the live/idle truth: a training run writes every few
+        # seconds, so small age == genuinely live; large age == you are
+        # looking at history. GPU util can false-positive on any GPU load.
+        age = -1
+        if path:
+            try:
+                age = int(time.time() - os.path.getmtime(path))
+            except OSError:
+                pass
+        age_s = ("" if age < 0
+                 else f"updated {age}s ago" if age < 120
+                 else f"log idle {age // 60}m")
         mark = run_marker(path, done_rx)
-        if util >= 20:
+        if 0 <= age < 45:
             status = f"{C['green']}training{C['rst']}"
         elif re.search(r"ABORT|Traceback", mark or ""):
             status = f"{C['red']}{C['bold']}CRASHED/ABORTED{C['rst']}"
         elif mark:
-            status = f"{C['cyan']}last run COMPLETE - waiting for next{C['rst']}"
-        elif gpu:
-            status = f"{C['gray']}idle{C['rst']}"
+            status = f"{C['cyan']}run COMPLETE - showing final state{C['rst']}"
         else:
-            status = f"{C['gray']}no gpu{C['rst']}"
+            status = f"{C['gray']}idle{C['rst']}"
         el = int(time.time() - t0)
         lines.append(f"  {C['gray']}elapsed {el//3600:02d}:"
                      f"{el % 3600 // 60:02d}:{el % 60:02d}  ·  "
-                     f"{time.strftime('%H:%M:%S')}  ·  {status}  ·  "
-                     f"Ctrl-C to quit{C['rst']}")
+                     f"{time.strftime('%H:%M:%S')}  ·  {status}"
+                     + (f"  ·  {age_s}" if age_s else "")
+                     + f"  ·  Ctrl-C quits{C['rst']}")
 
         if args.plain:
             print("\n".join(lines))

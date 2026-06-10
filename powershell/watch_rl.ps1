@@ -71,9 +71,13 @@ function Get-Snapshot {
   if ($Log -ne 'AUTO') { $args += $Log }
   $raw = (wsl.exe @args) -join "`n"
   $parts = $raw -split '@@@'
-  if ($parts.Count -lt 4) { return @{ name=''; upd=''; gpu=''; mark='' } }
+  if ($parts.Count -lt 4) { return @{ name=''; upd=''; gpu=''; mark=''; age=-1 } }
+  $age = -1
+  if ($parts.Count -ge 5 -and $parts[4].Trim() -match '^\d+$') {
+    $age = [int]$parts[4].Trim()
+  }
   return @{ name = $parts[0].Trim(); upd = $parts[1].Trim();
-            gpu = ($parts[2]).Trim(); mark = ($parts[3]).Trim() }
+            gpu = ($parts[2]).Trim(); mark = ($parts[3]).Trim(); age = $age }
 }
 
 function Parse-Upd($line) {
@@ -139,8 +143,8 @@ while ($true) {
     [void]$lines.Add(("  $($C.bold)steps$($C.rst)    {0,7:N1}M / {1:N0}M        $($C.gray)SPS$($C.rst) {2}" -f $stepM,$totM,$sps))
     [void]$lines.Add('')
     [void]$lines.Add(("  $($C.bold)ep_ret$($C.rst)   $($C.gray)▕$($C.cyan){0}$($C.gray)▏$($C.rst) {1,7:N1}   $($C.dim)(peak {2:N0})$($C.rst)" -f (Bar $epret $maxret $w),$epret,$maxret))
-    [void]$lines.Add(("  $($C.bold)rps$($C.rst)      $($C.gray)▕$($C.yellow){0}$($C.gray)▏$($C.rst) {1,7:N2}   $($C.dim)/ 6.0 max$($C.rst)" -f (Bar $rps 6.0 $w),$rps))
-    [void]$lines.Add(("  $($C.bold)ep_len$($C.rst)   $($C.gray)▕$($C.green){0}$($C.gray)▏$($C.rst) {1,7:N0}   $($C.dim)(trunc ~650)$($C.rst)" -f (Bar $eplen 650 $w),$eplen))
+    [void]$lines.Add(("  $($C.bold)rps$($C.rst)      $($C.gray)▕$($C.yellow){0}$($C.gray)▏$($C.rst) {1,7:N2}   $($C.dim)(bar scale 6)$($C.rst)" -f (Bar $rps 6.0 $w),$rps))
+    [void]$lines.Add(("  $($C.bold)ep_len$($C.rst)   $($C.gray)▕$($C.green){0}$($C.gray)▏$($C.rst) {1,7:N0}   $($C.dim)(bar scale 650)$($C.rst)" -f (Bar $eplen 650 $w),$eplen))
     [void]$lines.Add('')
     [void]$lines.Add("  $($C.bold)ep_ret trend$($C.rst)  $($C.cyan)$(Spark $hist)$($C.rst)  $($C.dim)(last $($hist.Count))$($C.rst)")
     [void]$lines.Add('')
@@ -161,13 +165,18 @@ while ($true) {
   $el = (Get-Date) - $start
   $elS = '{0:d2}:{1:d2}:{2:d2}' -f [int]$el.TotalHours,$el.Minutes,$el.Seconds
   $stamp = (Get-Date).ToString('HH:mm:ss')
-  # GPU util tells live vs idle; the driver marker is history, not state.
-  $status = if ($util -ge 20) { "$($C.green)training$($C.rst)" }
-            elseif ($snap.mark -match 'ABORT') { "$($C.red)$($C.bold)ABORTED$($C.rst)" }
+  # LOG AGE is the live/idle truth: a training run writes every few seconds.
+  # GPU util can false-positive (any GPU load); markers are history.
+  $age = $snap.age
+  $ageS = if ($age -lt 0) { "" }
+          elseif ($age -lt 120) { "updated ${age}s ago" }
+          else { "log idle $([math]::Floor($age/60))m" }
+  $status = if ($age -ge 0 -and $age -lt 45) { "$($C.green)training$($C.rst)" }
+            elseif ($snap.mark -match 'ABORT|Traceback') { "$($C.red)$($C.bold)CRASHED/ABORTED$($C.rst)" }
             elseif ($snap.mark -match 'COMPLETE') {
-              "$($C.cyan)last run COMPLETE - waiting for next$($C.rst)" }
+              "$($C.cyan)run COMPLETE - showing final state$($C.rst)" }
             else { "$($C.gray)idle$($C.rst)" }
-  [void]$lines.Add("  $($C.gray)elapsed $elS  ·  $stamp  ·  $status  ·  Ctrl-C to quit$($C.rst)")
+  [void]$lines.Add("  $($C.gray)elapsed $elS  ·  $stamp  ·  $status  ·  $ageS  ·  Ctrl-C quits$($C.rst)")
 
   if ($Plain) {
     $lines | ForEach-Object { Write-Host $_ }

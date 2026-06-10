@@ -4,7 +4,7 @@
 #   $1 (optional) = explicit log path
 #   RLDASH_DIR  (env, default ~)          = project dir to cd into
 #   RLDASH_GLOB (env, default runs/*.log) = which logs to auto-follow
-cd "${RLDASH_DIR:-$HOME}" 2>/dev/null || { echo "@@@"; echo "@@@"; echo "@@@"; exit 0; }
+cd "${RLDASH_DIR:-$HOME}" 2>/dev/null || { echo "@@@"; echo "@@@"; echo "@@@"; echo "@@@"; exit 0; }
 L="${1:-}"
 if [ -z "$L" ]; then
   # shellcheck disable=SC2086
@@ -19,3 +19,7 @@ nvidia-smi --query-gpu=temperature.gpu,power.draw,utilization.gpu \
   --format=csv,noheader,nounits 2>/dev/null | head -1
 echo "@@@"
 [ -n "$D" ] && grep -ahE 'COMPLETE|ABORT|done .exit' "$D" 2>/dev/null | tail -1
+echo "@@@"
+# AGE of the log in seconds: a live trainer writes every few seconds, so
+# small age == genuinely training; large age == you are looking at history.
+[ -n "$L" ] && echo $(( $(date +%s) - $(stat -c %Y "$L") ))
