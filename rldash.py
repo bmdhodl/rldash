@@ -95,6 +95,40 @@ def newest(patterns: str) -> str | None:
     return max(paths, key=os.path.getmtime)
 
 
+def wsl_distros() -> list[str]:
+    if os.name != "nt" or not shutil.which("wsl.exe"):
+        return []
+    try:
+        out = subprocess.run(["wsl.exe", "-l", "-q"], capture_output=True,
+                             timeout=10).stdout
+        names = out.decode("utf-16-le", errors="ignore").split("\n")
+        return [n.strip().strip("\r\x00") for n in names if n.strip().strip("\r\x00")]
+    except Exception:
+        return []
+
+
+def discovery_candidates() -> list[str]:
+    """Likely log locations, nearest first. On Windows this includes every
+    WSL distro's home projects -- training usually lives inside WSL."""
+    cands = ["runs/*.log", "logs/*.log", "log/*.log", "*.log"]
+    for d in wsl_distros():
+        cands.append(rf"\\wsl$\{d}\home" + r"\*\*\runs\*.log")
+        cands.append(rf"\\wsl$\{d}\home" + r"\*\runs\*.log")
+    return cands
+
+
+def discover(rx: re.Pattern) -> tuple[str, str] | None:
+    """Find a TRAINING log without being told where: a candidate only counts
+    if it contains a line matching --pattern (a bare *.log in cwd could be
+    any random application log). Returns (glob, path)."""
+    for pat in discovery_candidates():
+        for p in sorted(glob.glob(os.path.expanduser(pat)),
+                        key=os.path.getmtime, reverse=True)[:8]:
+            if last_match(p, rx):
+                return pat, p
+    return None
+
+
 def last_match(path: str, rx: re.Pattern, tail_bytes: int = 65536):
     try:
         with open(path, "rb") as f:
@@ -189,6 +223,10 @@ def main() -> None:
         pass
     rx = re.compile(args.pattern)
     done_rx = re.compile(args.done_pattern)
+    # auto-discovery is on only when --log was left at its default: an
+    # explicit --log means the user knows where their logs are
+    auto = (args.log == "runs/*.log" and "RLDASH_LOG" not in os.environ)
+    found_glob: str | None = None
     hist: list[float] = []
     last_log = ""
     t0 = time.time()
@@ -196,7 +234,11 @@ def main() -> None:
         sys.stdout.write(f"{ESC}[2J{ESC}[H")
 
     while True:
-        path = newest(args.log)
+        path = newest(found_glob) if found_glob else newest(args.log)
+        if path is None and auto:
+            hit = discover(rx)
+            if hit:
+                found_glob, path = hit
         lines: list[str] = []
         W = 30
         name = os.path.basename(path) if path else "(no log found)"
@@ -222,6 +264,11 @@ def main() -> None:
                 lines.append(f"  {C['yellow']}no log matched{C['rst']}  "
                              f"{C['dim']}--log \"{args.log}\"{C['rst']}")
                 lines.append(f"  {C['dim']}cwd: {os.getcwd()}{C['rst']}")
+                if auto:
+                    lines.append(f"  {C['dim']}also auto-searched: "
+                                 f"{'; '.join(discovery_candidates()[:4])}"
+                                 f"{' + WSL homes' if os.name == 'nt' else ''}"
+                                 f"{C['rst']}")
                 lines.append("")
                 lines.append(f"  {C['bold']}point me at your training log:"
                              f"{C['rst']}")
