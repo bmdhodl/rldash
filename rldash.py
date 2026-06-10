@@ -256,6 +256,18 @@ def main() -> None:
                      "╚" + "═" * 64 + "╝" + C["rst"])
         lines.append("")
 
+        # historical frames must be impossible to mistake for live: banner
+        # above the gauges, not just the footer note
+        try:
+            _age = int(time.time() - os.path.getmtime(path)) if path else -1
+        except OSError:
+            _age = -1
+        if _age >= 45:
+            lines.append(f"  {C['yellow']}{C['bold']}■ NOT LIVE -- final "
+                         f"state of a finished run (idle {_age // 60}m)"
+                         f"{C['rst']}")
+            lines.append("")
+
         m = last_match(path, rx) if path else None
         if not m:
             if path is None:
