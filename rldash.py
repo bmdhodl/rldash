@@ -38,9 +38,20 @@ DEFAULT_PATTERN = (
     r"SPS\s+(?P<sps>[\d,]+)\s+"
     r"ep_ret\s+(?P<ep_ret>-?[\d.]+)\s+"
     r"ep_len\s+(?P<ep_len>[\d.]+)"
-    r"(?:.*?rps\s+(?P<rps>-?[\d.]+))?"
-    r"(?:.*?logstd\s+(?P<logstd>[+-]?[\d.]+))?"
+    r"(?:\s+start_ang\s+(?P<start_ang>[\d.]+))?"
+    r"(?:\s+rps\s+(?P<rps>-?[\d.]+))?"
+    r"(?:\s+v_loss\s+(?P<v_loss>-?[\d.]+))?"
+    r"(?:\s+EV\s+(?P<EV>[+-]?[\d.]+))?"
+    r"(?:\s+logstd\s+(?P<logstd>[+-]?[\d.]+))?"
 )
+
+# Named groups consumed by dedicated gauges; every OTHER named group in the
+# pattern is shown verbatim in the footer -- custom patterns get their extra
+# fields displayed for free.
+GAUGE_FIELDS = {"upd", "updtot", "step", "sps", "ep_ret", "ep_len", "rps"}
+
+# Run-state markers searched in the log tail (and *driver*.out siblings).
+DEFAULT_DONE = r"COMPLETE|ABORT|Traceback|\[train\] done"
 
 ESC = "\x1b"
 C = dict(cyan=f"{ESC}[96m", green=f"{ESC}[92m", yellow=f"{ESC}[93m",
@@ -91,18 +102,41 @@ def last_match(path: str, rx: re.Pattern, tail_bytes: int = 65536):
     return hit
 
 
-def gpu_stats() -> tuple[int, float, int] | None:
+def gpu_stats() -> tuple[int, float, int, float] | None:
     if not shutil.which("nvidia-smi"):
         return None
     try:
         out = subprocess.run(
             ["nvidia-smi", "--query-gpu=temperature.gpu,power.draw,"
-             "utilization.gpu", "--format=csv,noheader,nounits"],
+             "utilization.gpu,power.limit", "--format=csv,noheader,nounits"],
             capture_output=True, text=True, timeout=5).stdout
-        t, p, u = (x.strip() for x in out.splitlines()[0].split(","))
-        return int(float(t)), float(p), int(float(u))
+        t, p, u, pl = (x.strip() for x in out.splitlines()[0].split(","))
+        return int(float(t)), float(p), int(float(u)), float(pl)
     except Exception:
         return None
+
+
+def run_marker(path: str | None, rx: re.Pattern) -> str:
+    """Search the log tail AND sibling *driver*.out files for a run-state
+    marker (COMPLETE / ABORT / crash). Returns the last marker text or ''."""
+    cands = []
+    if path:
+        cands.append(path)
+        cands += sorted(glob.glob(os.path.join(os.path.dirname(path) or ".",
+                                               "*driver*.out")),
+                        key=os.path.getmtime)[-1:]
+    last = ""
+    for p in cands:
+        try:
+            with open(p, "rb") as f:
+                f.seek(0, os.SEEK_END)
+                f.seek(max(0, f.tell() - 16384))
+                txt = f.read().decode("utf-8", errors="replace")
+        except OSError:
+            continue
+        for m in rx.finditer(txt):
+            last = m.group(0)
+    return last
 
 
 def fnum(s: str | None) -> float:
@@ -127,6 +161,9 @@ def main() -> None:
                     help="full-scale for the reward/step bar (0 = auto)")
     ap.add_argument("--gpu-limit", type=int, default=85,
                     help="temperature shown as the gauge limit")
+    ap.add_argument("--done-pattern", default=DEFAULT_DONE,
+                    help="regex marking run completion/crash, searched in the "
+                         "log tail and sibling *driver*.out files")
     ap.add_argument("--plain", action="store_true",
                     help="append frames instead of repainting (for piping)")
     ap.add_argument("--once", action="store_true", help="draw one frame, exit")
@@ -141,6 +178,7 @@ def main() -> None:
     except AttributeError:
         pass
     rx = re.compile(args.pattern)
+    done_rx = re.compile(args.done_pattern)
     hist: list[float] = []
     last_log = ""
     t0 = time.time()
@@ -219,12 +257,18 @@ def main() -> None:
                          f"{C['cyan']}{spark(hist)}{C['rst']}  "
                          f"{C['dim']}(last {len(hist)}){C['rst']}")
             lines.append("")
-            if g.get("logstd"):
-                lines.append(f"  {C['dim']}logstd {g['logstd']}{C['rst']}")
+            # every named group not consumed by a gauge gets shown verbatim --
+            # custom patterns surface their extra diagnostics automatically
+            extras = [f"{k} {v}" for k, v in g.items()
+                      if v is not None and k not in GAUGE_FIELDS]
+            if extras:
+                lines.append(f"  {C['dim']}{'   '.join(extras)}{C['rst']}")
 
         gpu = gpu_stats()
+        util = -1
         if gpu:
-            t, p, u = gpu
+            t, p, u, pl = gpu
+            util = u
             tcol = (C["red"] if t >= args.gpu_limit - 5
                     else C["yellow"] if t >= args.gpu_limit - 15
                     else C["green"])
@@ -237,13 +281,22 @@ def main() -> None:
                          f"{args.gpu_limit}{C['rst']}      {C['gray']}│"
                          + C["rst"])
             lines.append(f"  {C['gray']}│{C['rst']} {C['bold']}power"
-                         f"{C['rst']} {p:5.0f} W   {C['bold']}util{C['rst']} "
-                         f"{u:3d}%                       {C['gray']}│"
-                         + C["rst"])
+                         f"{C['rst']} {p:5.0f} W {C['dim']}of {pl:.0f} W"
+                         f"{C['rst']}   {C['bold']}util{C['rst']} "
+                         f"{u:3d}%            {C['gray']}│" + C["rst"])
             lines.append(f"  {C['gray']}└" + "─" * 53 + "┘"
                          + C["rst"])
-            status = (f"{C['green']}training{C['rst']}" if u >= 20
-                      else f"{C['gray']}idle{C['rst']}")
+
+        # run state: live GPU beats markers; markers tell complete vs crash
+        mark = run_marker(path, done_rx)
+        if util >= 20:
+            status = f"{C['green']}training{C['rst']}"
+        elif re.search(r"ABORT|Traceback", mark or ""):
+            status = f"{C['red']}{C['bold']}CRASHED/ABORTED{C['rst']}"
+        elif mark:
+            status = f"{C['cyan']}last run COMPLETE - waiting for next{C['rst']}"
+        elif gpu:
+            status = f"{C['gray']}idle{C['rst']}"
         else:
             status = f"{C['gray']}no gpu{C['rst']}"
         el = int(time.time() - t0)

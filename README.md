@@ -49,8 +49,10 @@ upd  205/1907  step 107,479,040  SPS 327,723  ep_ret 220.3  ep_len 94.8  rps 2.3
 ```
 
 Different trainer? Pass your own regex with named groups. Only `step` is
-required; `upd`, `updtot`, `sps`, `ep_ret`, `ep_len`, `rps`, and `logstd`
-light up extra rows when present:
+required; `upd`, `updtot`, `sps`, `ep_ret`, `ep_len`, and `rps` light up
+gauges when present — and **any other named group you add shows up
+automatically** in the diagnostics footer (`v_loss`, `EV`, `logstd`,
+whatever your trainer prints):
 
 ```bash
 python rldash.py --log train.log \
@@ -66,6 +68,7 @@ Useful flags:
 | `--ep-len-max 650` | fixed full-scale for the ep_len bar |
 | `--rps-max 6` | fixed full-scale for the reward/step bar |
 | `--gpu-limit 80` | temperature gauge limit |
+| `--done-pattern "COMPLETE\|Traceback"` | run-state markers: COMPLETE vs CRASHED in the footer |
 | `--plain --once` | print one frame and exit (CI, piping) |
 
 ## PowerShell flavor (Windows + WSL)
