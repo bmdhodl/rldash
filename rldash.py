@@ -80,8 +80,16 @@ def spark(vals: list[float]) -> str:
     return "".join(SPARKS[round((v - lo) / rng * 8)] for v in vals)
 
 
-def newest(pattern: str) -> str | None:
-    paths = glob.glob(os.path.expanduser(pattern))
+def visible_len(s: str) -> int:
+    return len(re.sub(r"\x1b\[[0-9;]*m", "", s))
+
+
+def newest(patterns: str) -> str | None:
+    """Newest file across comma-separated globs (~ expanded). On Windows,
+    \\\\wsl$\\<Distro>\\... paths work too -- point at training inside WSL."""
+    paths: list[str] = []
+    for pat in patterns.split(","):
+        paths += glob.glob(os.path.expanduser(pat.strip()))
     if not paths:
         return None
     return max(paths, key=os.path.getmtime)
@@ -146,8 +154,10 @@ def fnum(s: str | None) -> float:
 def main() -> None:
     ap = argparse.ArgumentParser(
         description="zero-dependency terminal dashboard for RL training logs")
-    ap.add_argument("--log", default="runs/*.log",
-                    help="log file or glob; newest match is followed")
+    ap.add_argument("--log", default=os.environ.get("RLDASH_LOG", "runs/*.log"),
+                    help="log file or glob(s, comma-separated); newest match "
+                         "is followed. Env default: RLDASH_LOG. On Windows, "
+                         r"\\wsl$\<Distro>\home\... reaches WSL runs")
     ap.add_argument("--pattern", default=DEFAULT_PATTERN,
                     help="regex with named groups; required: step; optional: "
                          "upd, updtot, sps, ep_ret, ep_len, rps, logstd")
@@ -206,8 +216,29 @@ def main() -> None:
 
         m = last_match(path, rx) if path else None
         if not m:
-            lines.append(f"  {C['yellow']}waiting for a matching log line..."
-                         f"{C['rst']}")
+            if path is None:
+                # actionable empty state: say exactly where we looked and how
+                # to point us at the right place
+                lines.append(f"  {C['yellow']}no log matched{C['rst']}  "
+                             f"{C['dim']}--log \"{args.log}\"{C['rst']}")
+                lines.append(f"  {C['dim']}cwd: {os.getcwd()}{C['rst']}")
+                lines.append("")
+                lines.append(f"  {C['bold']}point me at your training log:"
+                             f"{C['rst']}")
+                lines.append(f"    python rldash.py --log "
+                             f"\"~/myproj/runs/*.log\"")
+                if os.name == "nt":
+                    lines.append(f"    {C['dim']}training inside WSL? use the "
+                                 f"WSL path from Windows:{C['rst']}")
+                    lines.append(r"    python rldash.py --log "
+                                 r'"\\wsl$\Ubuntu-22.04\home\<you>\myproj'
+                                 r'\runs\*.log"')
+                    lines.append(f"    {C['dim']}...or run rldash inside WSL "
+                                 f"next to the run{C['rst']}")
+            else:
+                lines.append(f"  {C['yellow']}waiting for a line matching "
+                             f"--pattern in {os.path.basename(path)}..."
+                             f"{C['rst']}")
         else:
             g = m.groupdict()
             step = fnum(g.get("step"))
@@ -272,20 +303,22 @@ def main() -> None:
             tcol = (C["red"] if t >= args.gpu_limit - 5
                     else C["yellow"] if t >= args.gpu_limit - 15
                     else C["green"])
-            lines.append(f"  {C['gray']}┌─ GPU "
-                         + "─" * 47 + "┐" + C["rst"])
-            lines.append(f"  {C['gray']}│{C['rst']} {C['bold']}temp"
-                         f"{C['rst']}  {tcol}{t:>3}°C{C['rst']} "
-                         f"{C['gray']}▕{tcol}{bar(t, args.gpu_limit, 20)}"
-                         f"{C['gray']}▏{C['rst']} {C['dim']}limit "
-                         f"{args.gpu_limit}{C['rst']}      {C['gray']}│"
+            inner = 53           # box inner width; pad by VISIBLE length so
+            #                      ANSI codes never push the border around
+            row1 = (f" {C['bold']}temp{C['rst']}  {tcol}{t:>3}°C{C['rst']} "
+                    f"{C['gray']}▕{tcol}{bar(t, args.gpu_limit, 20)}"
+                    f"{C['gray']}▏{C['rst']} {C['dim']}limit "
+                    f"{args.gpu_limit}{C['rst']}")
+            row2 = (f" {C['bold']}power{C['rst']} {p:5.0f} W {C['dim']}of "
+                    f"{pl:.0f} W{C['rst']}   {C['bold']}util{C['rst']} "
+                    f"{u:3d}%")
+            lines.append(f"  {C['gray']}┌─ GPU " + "─" * (inner - 6) + "┐"
                          + C["rst"])
-            lines.append(f"  {C['gray']}│{C['rst']} {C['bold']}power"
-                         f"{C['rst']} {p:5.0f} W {C['dim']}of {pl:.0f} W"
-                         f"{C['rst']}   {C['bold']}util{C['rst']} "
-                         f"{u:3d}%            {C['gray']}│" + C["rst"])
-            lines.append(f"  {C['gray']}└" + "─" * 53 + "┘"
-                         + C["rst"])
+            for row in (row1, row2):
+                pad = " " * max(0, inner - visible_len(row))
+                lines.append(f"  {C['gray']}│{C['rst']}{row}{pad}"
+                             f"{C['gray']}│{C['rst']}")
+            lines.append(f"  {C['gray']}└" + "─" * inner + "┘" + C["rst"])
 
         # run state: live GPU beats markers; markers tell complete vs crash
         mark = run_marker(path, done_rx)

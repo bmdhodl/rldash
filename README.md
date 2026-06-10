@@ -71,6 +71,19 @@ Useful flags:
 | `--done-pattern "COMPLETE\|Traceback"` | run-state markers: COMPLETE vs CRASHED in the footer |
 | `--plain --once` | print one frame and exit (CI, piping) |
 
+## Training inside WSL, watching from Windows?
+
+Two good options:
+
+```powershell
+# point Windows Python at the WSL filesystem
+python rldash.py --log "\\wsl$\Ubuntu-22.04\home\<you>\myproj\runs\*.log"
+```
+
+or just run rldash *inside* WSL next to the run — it's pure stdlib, it runs
+anywhere. (If no log matches, rldash prints exactly where it looked and
+these same hints.)
+
 ## PowerShell flavor (Windows + WSL)
 
 The original lives in [`powershell/`](powershell/): a PowerShell dashboard
